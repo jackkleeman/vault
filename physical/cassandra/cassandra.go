@@ -25,6 +25,7 @@ type CassandraBackend struct {
 	table string
 
 	logger log.Logger
+	tracer gocql.Tracer
 }
 
 // Verify CassandraBackend satisfies the correct interfaces
@@ -147,6 +148,7 @@ func NewCassandraBackend(conf map[string]string, logger log.Logger) (physical.Ba
 		sess:   sess,
 		table:  table,
 		logger: logger,
+		tracer: gocql.NewTraceWriter(sess, logger.StandardLogger(&log.StandardLoggerOptions{}).Writer()),
 	}
 	return impl, nil
 }
@@ -318,8 +320,16 @@ func (c *CassandraBackend) Delete(ctx context.Context, key string) error {
 func (c *CassandraBackend) List(ctx context.Context, prefix string) ([]string, error) {
 	defer metrics.MeasureSince([]string{"cassandra", "list"}, time.Now())
 
+	start := time.Now()
+	defer func() {
+		c.logger.Info("list", "duration", time.Since(start), "prefix", prefix)
+	}()
+
 	stmt := fmt.Sprintf(`SELECT key FROM "%s" WHERE bucket = ?`, c.table)
 	q := c.sess.Query(stmt, c.bucketName(prefix))
+	if strings.HasPrefix(prefix, "sys/expire") {
+		q.Trace(c.tracer)
+	}
 	iter := q.Iter()
 	k, keys := "", []string{}
 	for iter.Scan(&k) {
